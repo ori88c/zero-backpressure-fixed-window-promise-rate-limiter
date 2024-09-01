@@ -305,4 +305,4 @@ To improve readability and maintainability, it is highly recommended to assign a
 
 ## License :scroll:
 
-[MIT](LICENSE)
+[Apache 2.0](LICENSE)
