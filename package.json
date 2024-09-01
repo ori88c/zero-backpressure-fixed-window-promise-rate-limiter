@@ -1,0 +1,63 @@
+{
+  "name": "zero-backpressure-fixed-window-promise-rate-limiter",
+  "version": "1.0.0",
+  "description": "A modern Promise rate-limiter for Node.js, implementing a fixed-window throttling policy. It restricts the number of tasks that can *start* execution within distinct, non-overlapping time windows. The API provides backpressure control by signaling availability, for enhanced efficiency. Additionally, it incorporates mechanisms for graceful termination and error handling, making it suitable for complex scenarios.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ori88c/zero-backpressure-fixed-window-promise-rate-limiter.git"
+  },
+  "contributors": [
+    "Ori Cohen (https://github.com/ori88c/)"
+  ],
+  "homepage": "https://github.com/ori88c/zero-backpressure-fixed-window-promise-rate-limiter#readme",
+  "author": "Ori Cohen",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "test": "jest"
+  },
+  "keywords": [
+    "rate-limit",
+    "rate-limiter",
+    "promise-rate-limiter",
+    "throttling",
+    "throttle",
+    "promise-throttle",
+    "time-window",
+    "fixed-window",
+    "limit",
+    "promise-limit",
+    "async",
+    "concurrency",
+    "backpressure",
+    "graceful-termination",
+    "deterministic-termination",
+    "scheduling",
+    "executor",
+    "uncaught-error",
+    "uncaught-rejection",
+    "nodejs",
+    "typescript",
+    "ts",
+    "ES2020"
+  ],
+  "engines": {
+    "node": ">=14.5.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.2"
+  },
+  "types": "./dist/zero-backpressure-fixed-window-promise-rate-limiter.d.ts",
+  "main": "./dist/zero-backpressure-fixed-window-promise-rate-limiter.js",
+  "files": [
+    "src/",
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ]
+}
