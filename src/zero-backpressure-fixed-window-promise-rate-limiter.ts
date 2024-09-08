@@ -340,8 +340,8 @@ export class FixedWindowRateLimiter<T = void, UncaughtErrorType = Error> {
         }
 
         if (++this._currWindowStartsCounter === 1) {
-            // This is the 1st task catered by the current window.
-            // Open a new fixed window, starting now.
+            // This is the first task processed by the current window.
+            // Open a new fixed window starting now.
             this._waitForWindowToEnd = new Promise(
                 notifyWindowEnded => setTimeout(
                     this._onWindowEndHandler,
@@ -361,7 +361,7 @@ export class FixedWindowRateLimiter<T = void, UncaughtErrorType = Error> {
         // the 21th window. It is important to remember that a Rate Limiter only limits the amount
         // of *starts* per window, while it does not limit the max amount of accumulated concurrency
         // (like a semaphore).
-        const newSlot = this._availableSlotsStack.length;
+        const newSlot = this._taskExecutionSlots.length;
         this._taskExecutionSlots.push(undefined);
         return newSlot;
     }
