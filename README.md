@@ -43,7 +43,7 @@ This implementation processes pending tasks in a First-In-First-Out (FIFO) order
 
 ## Even Distribution of Tasks: Shorter Window Duration
 
-There is a common misconception that the Sliding Window policy guarantees a more even distribution of tasks, compared to Fixed Window. This is not necessarily correct. For instance, consider a window duration of 1000ms and a specific window `[T, T + 1000)`. If we allow at most 200 tasks per window, and all 200 tasks begin within the first 5ms of the window `[T, T + 5]`, both Sliding and Fixed Window policies will prevent any additional tasks from starting for the remaining 995ms.
+There is a common misconception, arguing that the Sliding Window policy guarantees a more even distribution of tasks compared to Fixed Window. This is not necessarily correct. For instance, consider a window duration of 1000ms and a specific window `[T, T + 1000)`. If we allow at most 200 tasks per window, and all 200 tasks begin within the first 5ms of the window `[T, T + 5]`, both Sliding and Fixed Window policies will prevent any additional tasks from starting for the remaining 995ms.
 
 However, there is an edge case where a Fixed Window may fall short, while a Sliding Window does not: If all tasks begin **near the end** of the ith window and **near the start** of the (i+1)th window. In this scenario, **twice** the window's capacity could be reached within a very short time frame.
 
@@ -84,7 +84,7 @@ const sensorAggregationLimiter = new FixedWindowRateLimiter<void>(
 async function aggregateSensorsData(sensorUIDs: ReadonlyArray<string>): Promise<void> {
   for (const uid of sensorUIDs) {
     // Until the rate-limiter can start aggregating data from the current sensor,
-    // adding more tasks won't make sense, as such will induce unnecessary
+    // adding more tasks won't make sense as such will induce unnecessary
     // backpressure.
     await sensorAggregationLimiter.startExecution(
       (): Promise<void> => handleDataAggregation(uid)
