@@ -108,38 +108,59 @@ describe('FixedWindowRateLimiter tests', () => {
             expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(0);
             expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(1);
         });
-        test('waitForAllExecutingTasksToComplete should resolve only when all tasks are completed (either resolved or rejected)', async () => {
+        test('waitForAllExecutingTasksToComplete should resolve once all executing tasks have completed: ' +
+            'setup with insufficient initial slots, triggering dynamic slot allocation. ' +
+            'Tasks are resolved in FIFO order in this test', async () => {
+            // This test deliberately creates backpressure by simulating a burst of tasks
+            // that spans `amountOfWindows` time windows. As a result, each window (except the final one)
+            // is unable to process all the pending tasks.
+            const amountOfWindows = 12;
+            const amountOfTasks = amountOfWindows * MOCK_MAX_STARTS_PER_WINDOW; // Each window is fully utilized.
             const rateLimiter = createTestLimiter();
-            // This test simulates 2 windows. All the 1st window tasks reject (throw an error),
-            // while all the 2nd window tasks resolve successfully.
-            const totalAmountOfTasks = 2 * MOCK_MAX_STARTS_PER_WINDOW;
-            const taskResolveCallbacks = [];
-            const taskRejectCallbacks = [];
-            const createFirstWindowTask = () => new Promise((_, rej) => {
-                taskRejectCallbacks.push(rej);
+            // From the Rate Limiter's perspective, a task is considered complete upon either
+            // success or failure (i.e., when the Promise is resolved or rejected).
+            // To simulate real-world scenarios, this test includes tasks that both succeed and fail.
+            const taskCompletionCallbacks = [];
+            const createResolvingTask = () => new Promise(res => {
+                taskCompletionCallbacks.push(res);
+                // This promise will remain unsettled until we manually invoke the 'res' callback,
+                // simulating an ongoing task that is about to complete successfully.
             });
-            const createSecondWindowTask = () => new Promise(res => {
-                taskResolveCallbacks.push(res);
+            const createRejectingTask = () => new Promise((_, rej) => {
+                taskCompletionCallbacks.push(rej);
+                // This promise will remain unsettled until we manually invoke the 'rej' callback,
+                // simulating an ongoing task that is about to fail.
             });
-            // Adding the 1st window tasks.
-            for (let ithTask = 1; ithTask <= MOCK_MAX_STARTS_PER_WINDOW; ++ithTask) {
-                await rateLimiter.startExecution(createFirstWindowTask);
-                expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(ithTask);
-                expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(ithTask);
-                const isLastWindowTask = ithTask === MOCK_MAX_STARTS_PER_WINDOW;
-                expect(rateLimiter.isCurrentWindowAvailable).toBe(!isLastWindowTask);
-                expect(rateLimiter.amountOfUncaughtErrors).toBe(0);
+            const waitForCompletionPromises = [];
+            for (let ithTask = 1; ithTask <= amountOfTasks; ++ithTask) {
+                const shouldTaskSucceed = ithTask % 2 === 0; // Odd-numbered tasks fail, while even-numbered tasks succeed.
+                waitForCompletionPromises.push(
+                // Tasks will *start* execution in the order in which they were registered.
+                rateLimiter.waitForCompletion(shouldTaskSucceed ? createResolvingTask : createRejectingTask));
+                // Trigger the event loop.
+                // This may activate the rate limiter's dynamic slot allocation for this task,
+                // if the window's capacity hasn't been fully utilized yet.
+                // Most tasks should receive a new slot, as the rate limiter initially allocates
+                // slightly more slots than the window's capacity. However, in this test, there are
+                // `amountOfWindows` windows, which is significantly higher.
+                await Promise.race([
+                    waitForCompletionPromises[waitForCompletionPromises.length - 1],
+                    resolveFast()
+                ]);
             }
-            // Triggering the 2nd window.
-            triggerEndingOfCurrentWindow();
-            // Adding the 2nd window tasks.
-            for (let ithTask = MOCK_MAX_STARTS_PER_WINDOW + 1; ithTask <= totalAmountOfTasks; ++ithTask) {
-                await rateLimiter.startExecution(createSecondWindowTask);
-                expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(ithTask);
-                expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(ithTask - MOCK_MAX_STARTS_PER_WINDOW);
-                const isLastWindowTask = ithTask === totalAmountOfTasks;
-                expect(rateLimiter.isCurrentWindowAvailable).toBe(!isLastWindowTask);
-                expect(rateLimiter.amountOfUncaughtErrors).toBe(0);
+            // Trigger the end of all windows, while none of the tasks have settled yet.
+            // We expect the Rate Limiter to retain references to all still-executing tasks,
+            // including those from earlier windows that have already ended.
+            for (let ithWindow = 1; ithWindow <= amountOfWindows; ++ithWindow) {
+                expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(MOCK_MAX_STARTS_PER_WINDOW);
+                expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(ithWindow * MOCK_MAX_STARTS_PER_WINDOW // Reminder: tasks from previous windows are still executing.
+                );
+                expect(rateLimiter.isCurrentWindowAvailable).toBe(false);
+                // End the current window and trigger the event loop, allowing the next batch
+                // of the highest-priority tasks (first in Node.js's microtasks queue) to start
+                // execution.
+                triggerEndingOfCurrentWindow();
+                await Promise.race([waitForCompletionPromises[0], resolveFast()]);
             }
             let allTasksCompleted = false;
             const waitForAllExecutingTasksToComplete = (async () => {
@@ -148,38 +169,157 @@ describe('FixedWindowRateLimiter tests', () => {
             })();
             await Promise.race([waitForAllExecutingTasksToComplete, resolveFast()]);
             expect(allTasksCompleted).toBe(false);
-            // Completing tasks one by one. The completion order do not matter.
-            // For simplicity, first let's finish (reject) all the 1st window tasks.
-            const thrownError = new Error("mock error message");
-            let expectedAmountOfCurrentlyExecutingTasks = totalAmountOfTasks;
-            for (let ithTask = 1; ithTask <= MOCK_MAX_STARTS_PER_WINDOW; ++ithTask) {
-                const rejectCurrentTask = taskRejectCallbacks.pop();
-                rejectCurrentTask(thrownError);
+            // Complete all tasks one by one, in FIFO order.
+            let expectedAmountOfCurrentlyExecutingTasks = amountOfTasks;
+            for (let ithTask = 1; ithTask <= amountOfTasks; ++ithTask) {
+                let thrownError;
+                const shouldTaskSucceed = ithTask % 2 === 0;
+                if (shouldTaskSucceed) {
+                    taskCompletionCallbacks[ithTask - 1](); // Invoking the task's Promise-resolve callback.
+                }
+                else {
+                    thrownError = new Error(`mock error message: ${ithTask}`);
+                    taskCompletionCallbacks[ithTask - 1](thrownError); // Invoking the task's Promise-reject callback.
+                }
                 --expectedAmountOfCurrentlyExecutingTasks;
-                await Promise.race([waitForAllExecutingTasksToComplete, resolveFast()]);
-                expect(allTasksCompleted).toBe(false);
-                expect(rateLimiter.amountOfUncaughtErrors).toBe(ithTask);
+                // Trigger the event loop, we expect the current task promise to be settled.
+                if (shouldTaskSucceed) {
+                    await waitForCompletionPromises[ithTask - 1];
+                }
+                else {
+                    // The current task rejects.
+                    try {
+                        await waitForCompletionPromises[ithTask - 1];
+                        expect(true).toBe(false); // The flow should not reach this point.
+                    }
+                    catch (err) {
+                        expect(err.message).toEqual(thrownError.message);
+                    }
+                }
+                // Trigger the event loop.
+                if (ithTask === amountOfTasks) {
+                    await waitForAllExecutingTasksToComplete; // We have just completed the last task.
+                }
+                else {
+                    await Promise.race([waitForAllExecutingTasksToComplete, resolveFast()]);
+                }
+                expect(allTasksCompleted).toBe(ithTask === amountOfTasks);
                 expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(expectedAmountOfCurrentlyExecutingTasks);
+                // Currently we are in the (amountOfWindows +1)th window. We don't add any
+                // tasks to it, so its metrics are expected to remain unchanged.
+                expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(0);
+                expect(rateLimiter.isCurrentWindowAvailable).toBe(true);
+                expect(rateLimiter.amountOfUncaughtErrors).toBe(0);
             }
-            // Now, we resolve all the 2nd window tasks.
-            for (let ithTask = 1; ithTask <= MOCK_MAX_STARTS_PER_WINDOW; ++ithTask) {
-                const resolveCurrentTask = taskResolveCallbacks.pop();
-                resolveCurrentTask();
-                --expectedAmountOfCurrentlyExecutingTasks;
-                await Promise.race([waitForAllExecutingTasksToComplete, resolveFast()]);
-                expect(allTasksCompleted).toBe(false);
-                expect(rateLimiter.amountOfUncaughtErrors).toBe(MOCK_MAX_STARTS_PER_WINDOW);
-                expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(expectedAmountOfCurrentlyExecutingTasks);
-            }
-            // Finaly, we expect the `waitForAllExecutingTasksToComplete` promise to resolve.
-            await waitForAllExecutingTasksToComplete;
             expect(allTasksCompleted).toBe(true);
-            // Post processing validations.
-            expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(0);
-            expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(MOCK_MAX_STARTS_PER_WINDOW); // We are still in the 2nd window.
-            const extractedErrors = rateLimiter.extractUncaughtErrors();
-            const expectedErrors = new Array(MOCK_MAX_STARTS_PER_WINDOW).fill(thrownError);
-            expect(extractedErrors).toEqual(expectedErrors);
+        });
+        test('waitForAllExecutingTasksToComplete should resolve once all executing tasks have completed: ' +
+            'setup with insufficient initial slots, triggering dynamic slot allocation. ' +
+            'Tasks are resolved in FILO order in this test', async () => {
+            // FILO order for task completion times is unlikely in real life, but it’s a good edge case to test.
+            // It ensures the rate limiter can maintain a reference to an old task, even if its execution time exceeds
+            // all others.
+            // This test deliberately creates backpressure by simulating a burst of tasks
+            // that spans `amountOfWindows` time windows. As a result, each window (except the final one)
+            // is unable to process all the pending tasks.
+            const amountOfWindows = 10;
+            const amountOfTasks = amountOfWindows * MOCK_MAX_STARTS_PER_WINDOW; // Each window is fully utilized.
+            const rateLimiter = createTestLimiter();
+            // From the Rate Limiter's perspective, a task is considered complete upon either
+            // success or failure (i.e., when the Promise is resolved or rejected).
+            // To simulate real-world scenarios, this test includes tasks that both succeed and fail.
+            const taskCompletionCallbacks = [];
+            const createResolvingTask = () => new Promise(res => {
+                taskCompletionCallbacks.push(res);
+                // This promise will remain unsettled until we manually invoke the 'res' callback,
+                // simulating an ongoing task that is about to complete successfully.
+            });
+            const createRejectingTask = () => new Promise((_, rej) => {
+                taskCompletionCallbacks.push(rej);
+                // This promise will remain unsettled until we manually invoke the 'rej' callback,
+                // simulating an ongoing task that is about to fail.
+            });
+            const waitForCompletionPromises = [];
+            for (let ithTask = 1; ithTask <= amountOfTasks; ++ithTask) {
+                const shouldTaskSucceed = ithTask % 2 === 0; // Odd-numbered tasks fail, while even-numbered tasks succeed.
+                waitForCompletionPromises.push(
+                // Tasks will *start* execution in the order in which they were registered.
+                rateLimiter.waitForCompletion(shouldTaskSucceed ? createResolvingTask : createRejectingTask));
+                // Trigger the event loop.
+                // This may activate the rate limiter's dynamic slot allocation for this task,
+                // if the window's capacity hasn't been fully utilized yet.
+                // Most tasks should receive a new slot, as the rate limiter initially allocates
+                // slightly more slots than the window's capacity. However, in this test, there are
+                // `amountOfWindows` windows, which is significantly higher.
+                await Promise.race([
+                    waitForCompletionPromises[waitForCompletionPromises.length - 1],
+                    resolveFast()
+                ]);
+            }
+            // Trigger the end of all windows, while none of the tasks have settled yet.
+            // We expect the Rate Limiter to retain references to all still-executing tasks,
+            // including those from earlier windows that have already ended.
+            for (let ithWindow = 1; ithWindow <= amountOfWindows; ++ithWindow) {
+                expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(MOCK_MAX_STARTS_PER_WINDOW);
+                expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(ithWindow * MOCK_MAX_STARTS_PER_WINDOW // Reminder: tasks from previous windows are still executing.
+                );
+                expect(rateLimiter.isCurrentWindowAvailable).toBe(false);
+                // End the current window and trigger the event loop, allowing the next batch
+                // of the highest-priority tasks (first in Node.js's microtasks queue) to start
+                // execution.
+                triggerEndingOfCurrentWindow();
+                await Promise.race([waitForCompletionPromises[0], resolveFast()]);
+            }
+            let allTasksCompleted = false;
+            const waitForAllExecutingTasksToComplete = (async () => {
+                await rateLimiter.waitForAllExecutingTasksToComplete();
+                allTasksCompleted = true;
+            })();
+            await Promise.race([waitForAllExecutingTasksToComplete, resolveFast()]);
+            expect(allTasksCompleted).toBe(false);
+            // Complete all tasks one by one, in FILO order.
+            let expectedAmountOfCurrentlyExecutingTasks = amountOfTasks;
+            for (let ithTask = amountOfTasks; ithTask >= 1; --ithTask) {
+                let thrownError;
+                const shouldTaskSucceed = ithTask % 2 === 0;
+                if (shouldTaskSucceed) {
+                    taskCompletionCallbacks.pop()(); // Invoking the task's Promise-resolve callback.
+                }
+                else {
+                    thrownError = new Error(`mock error message: ${ithTask}`);
+                    taskCompletionCallbacks.pop()(thrownError); // Invoking the task's Promise-reject callback.
+                }
+                --expectedAmountOfCurrentlyExecutingTasks;
+                // Trigger the event loop, we expect the current task promise to be settled.
+                if (shouldTaskSucceed) {
+                    await waitForCompletionPromises.pop();
+                }
+                else {
+                    // The current task rejects.
+                    try {
+                        await waitForCompletionPromises.pop();
+                        expect(true).toBe(false); // The flow should not reach this point.
+                    }
+                    catch (err) {
+                        expect(err.message).toEqual(thrownError.message);
+                    }
+                }
+                // Trigger the event loop.
+                if (ithTask === 1) {
+                    await waitForAllExecutingTasksToComplete; // We have just completed the last task, the oldest one.
+                }
+                else {
+                    await Promise.race([waitForAllExecutingTasksToComplete, resolveFast()]);
+                }
+                expect(allTasksCompleted).toBe(ithTask === 1);
+                expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(expectedAmountOfCurrentlyExecutingTasks);
+                // Currently we are in the (amountOfWindows +1)th window. We don't add any
+                // tasks to it, so its metrics are expected to remain unchanged.
+                expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(0);
+                expect(rateLimiter.isCurrentWindowAvailable).toBe(true);
+                expect(rateLimiter.amountOfUncaughtErrors).toBe(0);
+            }
+            expect(allTasksCompleted).toBe(true);
         });
         test('startExecution: when backpressure is induced, each window should honor its capacity', async () => {
             const rateLimiter = createTestLimiter();

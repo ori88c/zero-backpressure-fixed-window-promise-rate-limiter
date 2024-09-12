@@ -1,6 +1,6 @@
 {
   "name": "zero-backpressure-fixed-window-promise-rate-limiter",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A modern Promise rate-limiter for Node.js projects, implementing a fixed-window throttling policy. It restricts the number of tasks that can *start* execution within distinct, non-overlapping time windows. The API provides backpressure control by signaling availability, for enhanced efficiency. Additionally, it incorporates mechanisms for graceful termination and error handling, making it suitable for complex scenarios.",
   "repository": {
     "type": "git",
