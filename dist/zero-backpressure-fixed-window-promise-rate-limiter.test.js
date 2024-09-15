@@ -24,7 +24,7 @@ const zero_backpressure_fixed_window_promise_rate_limiter_1 = require("./zero-ba
  */
 const resolveFast = async () => { expect(14).toBeGreaterThan(3); };
 const MOCK_WINDOW_DURATION_MS = 15 * 1000; // Can be long, as we use Jest's fake timers.
-const MOCK_MAX_STARTS_PER_WINDOW = 81;
+const MOCK_MAX_STARTS_PER_WINDOW = 37;
 const createTestLimiter = () => new zero_backpressure_fixed_window_promise_rate_limiter_1.FixedWindowRateLimiter(MOCK_WINDOW_DURATION_MS, MOCK_MAX_STARTS_PER_WINDOW);
 describe('FixedWindowRateLimiter tests', () => {
     let setTimeoutSpy;
@@ -77,8 +77,7 @@ describe('FixedWindowRateLimiter tests', () => {
             // Now, we resolve all the 1st window tasks. The excessive task still cannot be executed,
             // as the fixed time-window did not end.
             for (let ithTask = 1; ithTask <= MOCK_MAX_STARTS_PER_WINDOW; ++ithTask) {
-                finishTaskCallbacks[0]();
-                finishTaskCallbacks.shift();
+                finishTaskCallbacks[ithTask - 1]();
                 await Promise.race([outOfFirstWindowStartExecutionPromise, resolveFast()]);
                 expect(setTimeoutSpy).toHaveBeenCalledTimes(windowsCounter);
                 expect(rateLimiter.windowDurationMs).toBe(MOCK_WINDOW_DURATION_MS);
@@ -89,11 +88,10 @@ describe('FixedWindowRateLimiter tests', () => {
                 expect(rateLimiter.amountOfUncaughtErrors).toBe(0);
             }
             // Now, we simulate the ending of current window, allowing the pending task to begin.
-            expect(finishTaskCallbacks.length).toBe(0);
             triggerEndingOfCurrentWindow();
             ++windowsCounter;
             await outOfFirstWindowStartExecutionPromise;
-            expect(finishTaskCallbacks.length).toBe(1);
+            expect(finishTaskCallbacks.length).toBe(MOCK_MAX_STARTS_PER_WINDOW + 1);
             expect(setTimeoutSpy).toHaveBeenCalledTimes(windowsCounter);
             expect(rateLimiter.windowDurationMs).toBe(MOCK_WINDOW_DURATION_MS);
             expect(rateLimiter.maxStartsPerWindow).toBe(MOCK_MAX_STARTS_PER_WINDOW);
@@ -323,23 +321,27 @@ describe('FixedWindowRateLimiter tests', () => {
         });
         test('startExecution: when backpressure is induced, each window should honor its capacity', async () => {
             const rateLimiter = createTestLimiter();
-            const totalAmountOfWindows = 12;
+            const totalAmountOfWindows = 9;
             const amountOfLastWindowTasks = Math.floor(3 * MOCK_MAX_STARTS_PER_WINDOW / 4); // The last window won't utilize all its capacity.
             const totalAmountOfTasks = (totalAmountOfWindows - 1) * MOCK_MAX_STARTS_PER_WINDOW +
                 amountOfLastWindowTasks;
-            const startExecutionPromises = [];
-            const taskCompletionCallbacks = [];
-            // We create unresolved promises, simulating an async work in progress.
-            // They will be resolved later, once we want to simulate completion of the async work.
-            const createTask = () => new Promise(res => taskCompletionCallbacks.push(res));
+            const startExecutionPromises = new Array(totalAmountOfTasks).fill(undefined);
+            const taskCompletionCallbacks = new Array(totalAmountOfTasks).fill(undefined);
             // We push all tasks at once, inducing backpressure deliberately.
             // Note: this is not a mindful / wise use of the rate-limiter's capabilities, as the `startExecution`
             // method helps to avoid backpressure by promoting a just-in-time approach.
             // However, the rate-limiter guarantees validity under any settings, including under backpressure.
             for (let ithTask = 1; ithTask <= totalAmountOfTasks; ++ithTask) {
-                const currStartExecutionPromise = rateLimiter.startExecution(createTask);
-                startExecutionPromises.push(currStartExecutionPromise);
-                await Promise.race(startExecutionPromises); // Trigger the event loop.
+                // We create unresolved promises, simulating an async work in progress.
+                // They will be resolved later, once we want to simulate completion of the async work.
+                const taskIndex = ithTask - 1;
+                const createTask = () => new Promise(res => taskCompletionCallbacks[taskIndex] = res);
+                startExecutionPromises[taskIndex] = rateLimiter.startExecution(createTask);
+                // Trigger the event loop.
+                await Promise.race([
+                    startExecutionPromises[taskIndex],
+                    resolveFast()
+                ]);
                 expect(setTimeoutSpy).toHaveBeenCalledTimes(1); // setTimeout is triggered by the 1st window task.
                 expect(rateLimiter.windowDurationMs).toBe(MOCK_WINDOW_DURATION_MS);
                 expect(rateLimiter.maxStartsPerWindow).toBe(MOCK_MAX_STARTS_PER_WINDOW);
@@ -350,21 +352,20 @@ describe('FixedWindowRateLimiter tests', () => {
                 expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(amountOfAlreadyAddedFirstWindowTasks);
                 expect(rateLimiter.amountOfUncaughtErrors).toBe(0);
             }
-            let windowsCounter = 1;
             // Each main iteration begins when the current window (denoted by windowsCounter) is open, thus we
             // expect the rate-limiter to trigger (begin) all its tasks.
             // At the end of each main loop, we trigger the next window by advancing the system clock to the timestamp
             // when the current window ends, using fake timers.
-            do {
+            for (let ithWindow = 1; ithWindow <= totalAmountOfWindows; ++ithWindow) {
                 // The last window is not fully occupied, while all the others are.
-                const isLastWindow = windowsCounter === totalAmountOfWindows;
+                const isLastWindow = ithWindow === totalAmountOfWindows;
                 const expectedAmountOfCurrentlyExecutingTasks = isLastWindow ?
-                    totalAmountOfTasks : (windowsCounter * MOCK_MAX_STARTS_PER_WINDOW);
+                    totalAmountOfTasks : (ithWindow * MOCK_MAX_STARTS_PER_WINDOW);
                 const amountOfCurrentWindowTasks = isLastWindow ? amountOfLastWindowTasks : MOCK_MAX_STARTS_PER_WINDOW;
-                for (let ithCurrWindowTask = 1; ithCurrWindowTask <= amountOfCurrentWindowTasks; ++ithCurrWindowTask) {
-                    await startExecutionPromises[0];
-                    startExecutionPromises.shift();
-                    expect(setTimeoutSpy).toHaveBeenCalledTimes(windowsCounter);
+                let currTaskIndex = (ithWindow - 1) * MOCK_MAX_STARTS_PER_WINDOW;
+                for (let ithCurrWindowTask = 1; ithCurrWindowTask <= amountOfCurrentWindowTasks; ++ithCurrWindowTask, ++currTaskIndex) {
+                    await startExecutionPromises[currTaskIndex];
+                    expect(setTimeoutSpy).toHaveBeenCalledTimes(ithWindow);
                     expect(rateLimiter.isCurrentWindowAvailable).toBe(isLastWindow);
                     expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(expectedAmountOfCurrentlyExecutingTasks);
                     expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(amountOfCurrentWindowTasks);
@@ -372,24 +373,25 @@ describe('FixedWindowRateLimiter tests', () => {
                 if (!isLastWindow) {
                     triggerEndingOfCurrentWindow();
                     // Trigger the event loop. All the next-window tasks will begin execution.
-                    await Promise.race(startExecutionPromises);
-                    ++windowsCounter;
+                    const nextWindowLastTaskIndex = Math.min(totalAmountOfTasks - 1, (ithWindow + 1) * MOCK_MAX_STARTS_PER_WINDOW - 1);
+                    await startExecutionPromises[nextWindowLastTaskIndex];
                 }
-            } while (startExecutionPromises.length > 0);
+            }
             // Now, we finish tasks one by one. The order of completion does not matter for validating metrics.
             // We will use a FILO order, meaning a task that started later will be finished sooner.
-            let amountOfRemainedExecutingTasks = totalAmountOfTasks;
+            let expectedAmountOfCurrentlyExecutingTasks = totalAmountOfTasks;
             do {
                 const completeCurrentTask = taskCompletionCallbacks.pop();
                 completeCurrentTask();
-                await resolveFast(); // Trigger the event loop, to update the rate-limiter's internal state.
-                --amountOfRemainedExecutingTasks;
-                expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(amountOfRemainedExecutingTasks);
+                // Trigger the event loop, to update the rate-limiter's internal state.
+                await resolveFast();
+                --expectedAmountOfCurrentlyExecutingTasks;
+                expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(expectedAmountOfCurrentlyExecutingTasks);
                 // We are still within the last window.
                 expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(amountOfLastWindowTasks);
                 expect(setTimeoutSpy).toHaveBeenCalledTimes(totalAmountOfWindows);
                 expect(rateLimiter.isCurrentWindowAvailable).toBe(true); // Last window is not fully occupied.
-            } while (amountOfRemainedExecutingTasks > 0);
+            } while (expectedAmountOfCurrentlyExecutingTasks > 0);
             expect(rateLimiter.amountOfUncaughtErrors).toBe(0);
         });
         test('waitForCompletion: when backpressure is induced, each window should honor its capacity', async () => {
@@ -398,19 +400,24 @@ describe('FixedWindowRateLimiter tests', () => {
             const amountOfLastWindowTasks = Math.floor(7 * MOCK_MAX_STARTS_PER_WINDOW / 9); // The last window won't utilize all its capacity.
             const totalAmountOfTasks = (totalAmountOfWindows - 1) * MOCK_MAX_STARTS_PER_WINDOW +
                 amountOfLastWindowTasks;
-            const waitForCompletionPromises = [];
-            const taskCompletionCallbacks = [];
-            // We create unresolved promises, simulating an async work in progress.
-            // They will be resolved later, once we want to simulate completion of the async work.
-            const createTask = () => new Promise(res => taskCompletionCallbacks.push(res));
+            const waitForCompletionPromises = new Array(totalAmountOfTasks).fill(undefined);
+            const taskCompletionCallbacks = new Array(totalAmountOfTasks).fill(undefined);
             // We push all tasks at once, inducing backpressure deliberately.
             // Such a scenario can be unavoidable, for example if there's a spike in requests
             // to a specific route handler, which uses a rate-limiter to comply with a third-party
             // API that has throttling limits.
             for (let ithTask = 1; ithTask <= totalAmountOfTasks; ++ithTask) {
-                const currWaitForCompletionPromise = rateLimiter.waitForCompletion(createTask);
-                waitForCompletionPromises.push(currWaitForCompletionPromise);
-                await resolveFast(); // Trigger the event loop.
+                // We create unresolved promises, simulating an async work in progress.
+                // They will be resolved later, once we want to simulate completion of the async work.
+                const taskIndex = ithTask - 1;
+                const createTask = () => new Promise(res => taskCompletionCallbacks[taskIndex] = res);
+                waitForCompletionPromises[taskIndex] = rateLimiter.waitForCompletion(createTask);
+                ;
+                // Trigger the event loop.
+                await Promise.race([
+                    waitForCompletionPromises[taskIndex],
+                    resolveFast()
+                ]);
                 expect(setTimeoutSpy).toHaveBeenCalledTimes(1); // setTimeout is triggered by the 1st window task.
                 expect(rateLimiter.windowDurationMs).toBe(MOCK_WINDOW_DURATION_MS);
                 expect(rateLimiter.maxStartsPerWindow).toBe(MOCK_MAX_STARTS_PER_WINDOW);
@@ -437,25 +444,27 @@ describe('FixedWindowRateLimiter tests', () => {
                 expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(amountOfCurrentWindowTasks);
                 if (!isLastWindow) {
                     triggerEndingOfCurrentWindow();
-                    await resolveFast(); // Trigger the event loop. All next-window tasks will begin execution.
+                    // Trigger the event loop. All next-window tasks will begin execution.
+                    await Promise.race([
+                        waitForCompletionPromises,
+                        resolveFast()
+                    ]);
                 }
             }
             // Now, we finish tasks one by one. The order of completion does not matter for validating metrics.
             // In this test, tasks will be completed in a FIFO order.
-            let amountOfRemainedExecutingTasks = totalAmountOfTasks;
-            do {
-                const completeOldestExecutingTask = taskCompletionCallbacks[0];
+            let expectedAmountOfCurrentlyExecutingTasks = totalAmountOfTasks;
+            for (let ithTask = 1; ithTask <= totalAmountOfTasks; ++ithTask) {
+                const completeOldestExecutingTask = taskCompletionCallbacks[ithTask - 1];
                 completeOldestExecutingTask();
-                taskCompletionCallbacks.shift();
-                await waitForCompletionPromises[0]; // This wait-for-completion promise corresponds the just-completed task.
-                waitForCompletionPromises.shift();
-                --amountOfRemainedExecutingTasks;
-                expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(amountOfRemainedExecutingTasks);
+                await waitForCompletionPromises[ithTask - 1]; // This wait-for-completion promise corresponds the just-completed task.
+                --expectedAmountOfCurrentlyExecutingTasks;
+                expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(expectedAmountOfCurrentlyExecutingTasks);
                 // We are still within the last window.
                 expect(rateLimiter.amountOfTasksInitiatedDuringCurrentWindow).toBe(amountOfLastWindowTasks);
                 expect(setTimeoutSpy).toHaveBeenCalledTimes(totalAmountOfWindows);
                 expect(rateLimiter.isCurrentWindowAvailable).toBe(true); // Last window is not fully occupied.
-            } while (amountOfRemainedExecutingTasks > 0);
+            }
             expect(rateLimiter.amountOfUncaughtErrors).toBe(0);
         });
     });
