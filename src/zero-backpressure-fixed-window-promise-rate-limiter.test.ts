@@ -588,11 +588,11 @@ describe('FixedWindowRateLimiter tests', () => {
       }
     
       await rateLimiter.waitForAllExecutingTasksToComplete();
-        expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(0);
-        expect(rateLimiter.amountOfUncaughtErrors).toBe(amountOfTasks);
-        expect(rateLimiter.extractUncaughtErrors()).toEqual(expectedTaskErrors);
-        // Following extraction, the rate-limiter no longer holds the error references.
-        expect(rateLimiter.amountOfUncaughtErrors).toBe(0);
+      expect(rateLimiter.amountOfCurrentlyExecutingTasks).toBe(0);
+      expect(rateLimiter.amountOfUncaughtErrors).toBe(amountOfTasks);
+      expect(rateLimiter.extractUncaughtErrors()).toEqual(expectedTaskErrors);
+      // Following extraction, the rate-limiter no longer holds the error references.
+      expect(rateLimiter.amountOfUncaughtErrors).toBe(0);
     });
   });
 });

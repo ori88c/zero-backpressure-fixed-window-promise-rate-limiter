@@ -189,17 +189,15 @@ export declare class FixedWindowRateLimiter<T = void, UncaughtErrorType = Error>
     /**
      * waitForAllExecutingTasksToComplete
      *
-     * This method allows the caller to wait until all *currently* executing tasks have completed.
-     * It is useful for ensuring that the application can terminate gracefully, without leaving
-     * any pending operations.
+     * This method allows the caller to wait until all *currently* executing tasks have finished,
+     * meaning once all running promises have either resolved or rejected.
      *
-     * When this method is called, it returns a promise that resolves once all currently running
-     * promises have either resolved or rejected. This is particularly useful in scenarios where
-     * you need to ensure that all tasks are completed before proceeding, such as during shutdown
-     * processes or between unit tests.
+     * This is particularly useful in scenarios where you need to ensure that all tasks are completed
+     * before proceeding, such as during shutdown processes or between unit tests.
      *
      * Note that the returned promise only awaits tasks that were executed at the time this method
-     * was called.
+     * was called. Specifically, it awaits all tasks initiated by this instance — whether from the
+     * current window or previous windows — that had not completed at the time of invocation.
      *
      * @returns A promise that resolves when all currently executing tasks are completed.
      */
