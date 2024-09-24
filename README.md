@@ -34,12 +34,35 @@ This implementation processes pending tasks in a First-In-First-Out (FIFO) order
 - __Graceful Termination__: Await the completion of all currently executing tasks via the `waitForAllExecutingTasksToComplete` method.
 - __High Efficiency :gear:__: All state-altering operations have a constant time complexity, O(1).
 - __Comprehensive documentation :books:__: The class is thoroughly documented, enabling IDEs to provide helpful tooltips that enhance the coding experience.
+- __Metrics :bar_chart:__: The class offers various metrics through getter methods, providing insights into the rate limiter's current state.
 - __Robust Error Handling__: Uncaught errors from background tasks triggered by `startExecution` are captured and can be accessed using the `extractUncaughtErrors` method.
-- **Fully covered** by rigorous unit tests.
+- __Fully covered__ by rigorous unit tests :test_tube:.
 - Self-explanatory method names.
 - No external runtime dependencies: Only development dependencies are used.
 - ES2020 Compatibility: The `tsconfig` target is set to ES2020, ensuring compatibility with ES2020 environments.
 - TypeScript support.
+
+## API :globe_with_meridians:
+
+The `FixedWindowRateLimiter` class provides the following methods:
+
+* __startExecution__: Resolves once the given task has **started** its execution. Users can leverage this to prevent backpressure of pending tasks; If the rate-limiter is too busy to start a given task `X`, there is no reason to create another task `Y` until `X` has started. This method is particularly useful for background job workers that frequently retrieve job metadata from external sources, such as pulling messages from a message broker.
+* __waitForCompletion__: Executes the given task in a controlled manner, once there is an available window. It resolves or rejects when the task **completes** execution, returning the task's value or propagating any error it may throw.
+* __waitForAllExecutingTasksToComplete__: Resolves when all **currently** executing tasks have finished, meaning once all running promises have either resolved or rejected. This is particularly useful in scenarios where you need to ensure that all tasks are completed before proceeding, such as during shutdown processes or between unit tests.
+* __extractUncaughtErrors__: Returns an array of uncaught errors, captured by the rate-limiter while executing background tasks added by `startExecution`. The instance will no longer hold these error references once extracted. In other words, ownership of these uncaught errors shifts to the caller, while the rate-limiter clears its list of uncaught errors.
+
+If needed, refer to the code documentation for a more comprehensive description of each method.
+
+## Getter Methods :mag:
+
+The `FixedWindowRateLimiter` class provides the following getter methods to reflect the current state:
+
+* __maxStartsPerWindow__: The maximum number of tasks allowed to start within a given fixed window. This value is set in the constructor and remains constant throughout the instance's lifespan.
+* __windowDurationMs__: The fixed-window duration in milliseconds. This value is set in the constructor and remains constant throughout the instance's lifespan.
+* __isCurrentWindowAvailable__: Indicates whether the current window is not fully booked, i.e., fewer than `maxStartsPerWindow` tasks have begun execution within the current window.
+* __amountOfCurrentlyExecutingTasks__: The number of tasks currently being executed by this instance. Note that the number of concurrently executing tasks is **not** restricted by the rate limiter, as this is not a semaphore. A rate limiter only limits the number of tasks **starting** execution within a given window. However, a task may continue to run after its window ends and may even persist across multiple windows.
+* __amountOfTasksInitiatedDuringCurrentWindow__: The number of tasks that have started within the current window.
+* __amountOfUncaughtErrors__: The number of uncaught errors from background tasks, triggered by `startExecution`.
 
 ## Even Distribution of Tasks: Shorter Window Duration
 
