@@ -15,7 +15,22 @@ The design addresses the two primary rate-limiting use cases in Node.js:
 
 Each use case necessitates distinct handling capabilities, which will be discussed separately with accompanying examples.
 
-## Fixed-Window Policy
+## Table of Contents
+
+* [Fixed-Window Policy](#fixed-window-policy)
+* [Key Features](#key-features)
+* [API](#api)
+* [Getter Methods](#getter-methods)
+* [Even Distribution of Tasks: Shorter Window Duration](#even-distribution)
+* [1st use-case: Multiple Tasks Execution](#first-use-case)
+* [2nd use-case: Single Task Execution](#second-use-case)
+* [Graceful Termination](#graceful-termination)
+* [Error Handling for Background Tasks](#error-handling)
+* [Unavoidable / Implicit Backpressure](#unavoidable-backpressure)
+* [Naming Convention](#naming-convention)
+* [License](#license)
+
+## Fixed-Window Policy<a id="fixed-window-policy"></a>
 
 By definition, fixed windows **do not overlap**; each window is distinct.
 
@@ -27,7 +42,7 @@ When a task is pending execution, the rate limiter follows this competition proc
 
 This implementation processes pending tasks in a First-In-First-Out (FIFO) order, prioritizing earlier tasks over newer ones. This approach is common and effectively eliminates the possibility of starvation.
 
-## Key Features :sparkles:
+## Key Features :sparkles:<a id="key-features"></a>
 
 - __Fixed Window Policy__: Windows are distinct and **do not overlap**. This approach has a low performance overhead, and can ensure an even distribution of tasks if a relatively short window duration is chosen.
 - __Backpressure Control__: Ideal for job workers and background services. Concurrency control alone isn't sufficient to ensure stability and performance if backpressure control is overlooked. For example, when message queues are involved, overlooking backpressure control can lead to messages accumulating over a long period, potentially reaching their TTL.
@@ -36,13 +51,13 @@ This implementation processes pending tasks in a First-In-First-Out (FIFO) order
 - __Comprehensive documentation :books:__: The class is thoroughly documented, enabling IDEs to provide helpful tooltips that enhance the coding experience.
 - __Metrics :bar_chart:__: The class offers various metrics through getter methods, providing insights into the rate limiter's current state.
 - __Robust Error Handling__: Uncaught errors from background tasks triggered by `startExecution` are captured and can be accessed using the `extractUncaughtErrors` method.
-- __Fully covered__ by rigorous unit tests :test_tube:.
+- __Tests :test_tube:__: **Fully covered** by rigorous unit tests.
 - Self-explanatory method names.
 - No external runtime dependencies: Only development dependencies are used.
 - ES2020 Compatibility: The `tsconfig` target is set to ES2020, ensuring compatibility with ES2020 environments.
 - TypeScript support.
 
-## API :globe_with_meridians:
+## API :globe_with_meridians:<a id="api"></a>
 
 The `FixedWindowRateLimiter` class provides the following methods:
 
@@ -53,7 +68,7 @@ The `FixedWindowRateLimiter` class provides the following methods:
 
 If needed, refer to the code documentation for a more comprehensive description of each method.
 
-## Getter Methods :mag:
+## Getter Methods :mag:<a id="getter-methods"></a>
 
 The `FixedWindowRateLimiter` class provides the following getter methods to reflect the current state:
 
@@ -64,7 +79,9 @@ The `FixedWindowRateLimiter` class provides the following getter methods to refl
 * __amountOfTasksInitiatedDuringCurrentWindow__: The number of tasks that have started within the current window.
 * __amountOfUncaughtErrors__: The number of uncaught errors from background tasks, triggered by `startExecution`.
 
-## Even Distribution of Tasks: Shorter Window Duration
+To eliminate any ambiguity, all getter methods have **O(1)** time and space complexity, meaning they do **not** iterate through all currently executing tasks with each call. The metrics are maintained by the tasks themselves.
+
+## Even Distribution of Tasks: Shorter Window Duration<a id="even-distribution"></a>
 
 There is a common misconception, arguing that the Sliding Window policy guarantees a more even distribution of tasks compared to Fixed Window. This is not necessarily correct. For instance, consider a window duration of 1000ms and a specific window `[T, T + 1000)`. If we allow at most 200 tasks per window, and all 200 tasks begin within the first 5ms of the window `[T, T + 5]`, both Sliding and Fixed Window policies will prevent any additional tasks from starting for the remaining 995ms.
 
@@ -76,7 +93,7 @@ Thus, even when complying with third-party API throttling constraints, it is adv
 
 Note that the minimum allowed window duration of the `FixedWindowRateLimiter` class is 15ms, considering that Node.js time-handling utilities do not guarantee precise timing.
 
-## 1st use-case: Multiple Tasks Execution :man_technologist:
+## 1st use-case: Multiple Tasks Execution :man_technologist:<a id="first-use-case"></a>
 
 This rate-limiter variant excels in eliminating backpressure when dispatching multiple concurrent tasks from the same caller. This pattern is typically observed in **background job services**, such as:
 - Log File analysis.
@@ -241,7 +258,7 @@ async function processConsumedMessages(): Promise<void> {
 }
 ```
 
-## 2nd use-case: Single Task Execution :man_technologist:
+## 2nd use-case: Single Task Execution :man_technologist:<a id="second-use-case"></a>
 
 The `waitForCompletion` method is useful for executing a sub-procedure, for which the caller **must wait before proceeding** with its work.
 
@@ -287,7 +304,7 @@ app.get('/user/', async (req, res) => {
 });
 ```
 
-## Graceful Termination :hourglass:
+## Graceful Termination :hourglass:<a id="graceful-termination"></a>
 
 The `waitForAllExecutingTasksToComplete` method is essential for scenarios where it is necessary to wait for all ongoing tasks to finish, such as logging a success message or executing subsequent logic.
 
@@ -295,7 +312,7 @@ A key use case for this method is ensuring stable unit tests. Each test should s
 
 If your component has a termination method (`stop`, `terminate`, or similar), keep that in mind.
 
-## Error Handling for Background Tasks :warning:
+## Error Handling for Background Tasks :warning:<a id="error-handling"></a>
 
 Background tasks triggered by `startExecution` may throw errors. Unlike the `waitForCompletion` case, the caller has no reference to the corresponding task promise which executes in the background.
 
@@ -313,19 +330,19 @@ However, there are a few exceptional cases where the user can safely avoid extra
 - The number of tasks is relatively small and the process is short-lived.
 - The tasks never throw errors, thus no uncaught errors are possible.
 
-## Unavoidable / Implicit Backpressure
+## Unavoidable / Implicit Backpressure<a id="unavoidable-backpressure"></a>
 
 Mitigating backpressure is primarily associated with the `startExecution` method, particularly in scenarios involving multiple tasks. However, the single-task use case may certainly inflict backpressure on the Node.js micro-tasks queue.
 
 For instance, consider a situation where 1K concurrently executing route handlers are each awaiting the completion of their own `waitForCompletion` execution, while the rate-limiter is unavailable. In such cases, all handlers will internally wait on the rate-limiter's `_waitForWindowToEnd` private property, competing to acquire an available window.
 
-## Naming Convention :memo:
+## Naming Convention :memo:<a id="naming-convention"></a>
 
 To improve readability and maintainability, it is highly recommended to assign a use-case-specific name to your rate-limiter instances. This practice helps in clearly identifying the purpose of each rate-limiter in the codebase. Examples include:
 - dbAccessLimiter
 - tokenGenerationLimiter
 - azureStorageLimiter
 
-## License :scroll:
+## License :scroll:<a id="license"></a>
 
 [Apache 2.0](LICENSE)
