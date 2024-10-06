@@ -199,7 +199,14 @@ export class FixedWindowRateLimiter<T = void, UncaughtErrorType = Error> {
     /**
      * amountOfUncaughtErrors
      * 
-     * @returns The number of uncaught errors from background tasks, triggered by `startExecution`.
+     * Indicates the number of uncaught errors from background tasks triggered by `startExecution`,
+     * that are currently stored by the instance.
+     * These errors have not yet been extracted using `extractUncaughtErrors`.
+     * 
+     * Knowing the number of uncaught errors allows users to decide whether to process them immediately
+     * or wait for further accumulation.
+     * 
+     * @returns The number of uncaught errors from background tasks.
      */	
     public get amountOfUncaughtErrors(): number {
         return this._uncaughtErrors.length;
