@@ -107,7 +107,9 @@ This rate-limiter variant excels in eliminating backpressure when dispatching mu
 Here, the **start time** of each task is crucial. Since a pending task cannot start its execution until the rate-limiter allows, there is no benefit to adding additional tasks that cannot start immediately. The `startExecution` method communicates the task's start time to the caller (resolves as soon as the task starts), which enables to create a new task **as-soon-as it makes sense**.
 
 For example, consider an application managing 1M IoT sensors that require hourly data aggregation. Each sensor's data is aggregated through a third-party API with a throttling limit of 50 requests per second.  
-Rather than pre-creating 1M tasks (one for each sensor), which could potentially overwhelm the Node.js task queue and induce backpressure, the system should adopt a **just-in-time** approach. This means creating a sensor aggregation task only when the rate-limiter indicates availability, thereby optimizing resource utilization and maintaining system stability.
+Instead of loading all sensor UIDs into memory and pre-creating 1M tasks (one for each sensor), which could potentially overwhelm the Node.js task queue and induce backpressure, the system should adopt a **just-in-time** approach. This means creating a sensor aggregation task only when the rate-limiter indicates availability, thereby optimizing resource utilization and maintaining system stability.
+
+The following example demonstrates fetching sensor UIDs using an `AsyncGenerator`. Async generators and iterators are widely adopted in modern APIs, providing efficient handling of potentially large data sets. For instance, the [AWS-SDK](https://aws.amazon.com/blogs/developer/pagination-using-async-iterators-in-modular-aws-sdk-for-javascript/) utilizes them for pagination, abstracting away complexities like managing offsets. Similarly, [MongoDB's cursor](https://www.mongodb.com/docs/manual/reference/method/db.collection.find/) enables iteration over a large number of documents in a paginated and asynchronous manner. These abstractions elegantly handle pagination internally, sparing users the complexities of managing offsets and other low-level details. By awaiting the semaphore's availability, the **space complexity** is implicitly constrained to *O(max(page-size, semaphore-capacity))*, as the `AsyncGenerator` fetches a new page only after all sensors from the current page have initiated aggregation.
 
 Note: method `waitForAllExecutingTasksToComplete` can be used to perform post-processing, after all tasks have completed. It complements the typical use-cases of `startExecution`.
 
@@ -121,8 +123,12 @@ const sensorAggregationLimiter = new FixedWindowRateLimiter<void>(
   maxStartsPerWindow
 );
 
-async function aggregateSensorsData(sensorUIDs: ReadonlyArray<string>): Promise<void> {
-  for (const uid of sensorUIDs) {
+async function aggregateSensorsData(sensorUIDs: AsyncGenerator<string>): Promise<void> {
+  let fetchedSensorsCounter = 0;
+
+  for await (const uid of sensorUIDs) {
+    ++fetchedSensorsCounter;
+
     // Until the rate-limiter can start aggregating data from the current sensor,
     // adding more tasks won't make sense as such will induce unnecessary
     // backpressure.
@@ -135,7 +141,7 @@ async function aggregateSensorsData(sensorUIDs: ReadonlyArray<string>): Promise<
 
   // Graceful termination: await the completion of all currently executing tasks.
   await sensorAggregationLimiter.waitForAllExecutingTasksToComplete();
-  console.info(`Finished aggregating data from ${sensorUIDs.length} IoT sensors`);
+  console.info(`Finished aggregating data from ${fetchedSensorsCounter} IoT sensors`);
 }
 
 /**
@@ -151,7 +157,7 @@ async function handleDataAggregation(sensorUID): Promise<void> {
 }
 ```
 
-If the tasks might throw errors, you don't need to worry about these errors propagating up to the event loop and potentially crashing the application. Uncaught errors from tasks triggered by `startExecution` are captured by the rate-limiter and can be safely accessed for post-processing purposes (e.g., metrics).  
+If tasks might throw errors, you don't need to worry about these errors propagating to the event loop and potentially crashing the application. Uncaught errors from tasks triggered by `startExecution` are captured by the rate-limiter and can be safely accessed for post-processing purposes (e.g., metrics).  
 Refer to the following adaptation of the above example, now utilizing the error handling capabilities:
 
 ```ts
@@ -166,8 +172,12 @@ const sensorAggregationLimiter =
     maxStartsPerWindow
   );
 
-async function aggregateSensorsData(sensorUIDs: ReadonlyArray<string>): Promise<void> {
-  for (const uid of sensorUIDs) {
+async function aggregateSensorsData(sensorUIDs: AsyncGenerator<string>): Promise<void> {
+  let fetchedSensorsCounter = 0;
+
+  for await (const uid of sensorUIDs) {
+    ++fetchedSensorsCounter;
+
     await sensorAggregationLimiter.startExecution(
       (): Promise<void> => handleDataAggregation(uid)
     );
@@ -183,76 +193,9 @@ async function aggregateSensorsData(sensorUIDs: ReadonlyArray<string>): Promise<
   }
 
   // Summary.
-  const successfulTasksCount = sensorUIDs.length - errors.length;
+  const successfulTasksCount = fetchedSensorsCounter - errors.length;
   logger.info(
     `Successfully aggregated data from ${successfulJobsCount} IoT sensors, ` +
-    `with failures in aggregating data from ${errors.length} IoT sensors`
-  );
-}
-```
-
-Please note that in a real-world scenario, sensor UIDs may be consumed from a message queue (e.g., RabbitMQ, Kafka, AWS SNS) rather than from an in-memory array. This setup **highlights the benefits** of avoiding backpressure:  
-Working with message queues typically involves acknowledgements, which have **timeout** mechanisms. Therefore, immediate processing is crucial to ensure efficient and reliable handling of messages. Backpressure on the rate-limiter means that messages experience longer delays before their corresponding tasks start execution.  
-Refer to the following adaptation of the previous example, where sensor UIDs are consumed from a message queue. This example overlooks error handling and message validation, for simplicity.
-
-```ts
-import {
-  FixedWindowRateLimiter,
-  RateLimiterTask
-} from 'zero-backpressure-fixed-window-promise-rate-limiter';
-
-const windowDurationMs = 1000;
-const maxStartsPerWindow = 50;
-const sensorAggregationLimiter =
-  new FixedWindowRateLimiter<void, SensorAggregationError>(
-    windowDurationMs,
-    maxStartsPerWindow
-  );
-
-const SENSOR_UIDS_TOPIC = "IOT_SENSOR_UIDS";
-const mqClient = new MessageQueueClient(SENSOR_UIDS_TOPIC);
-
-async function processConsumedMessages(): Promise<void> {
-  let processedMessagesCounter = 0;
-  let isEmptyQueue = false;
-
-  const processOneMessage: RateLimiterTask<void> = async (): Promise<void> => {
-    if (isEmptyQueue) {
-      return;
-    }
-
-    const message = await mqClient.receiveOneMessage();
-    if (!message) {
-      // Consider the queue as empty.
-      isEmptyQueue = true;
-      return;
-    }
-
-    ++processedMessagesCounter;
-    const { uid } = message.data;
-    await handleDataAggregation(uid);
-    await mqClient.removeMessageFromQueue(message); // Acknowledge.
-  };
-
-  do {
-    await sensorAggregationLimiter.startExecution(processOneMessage);
-  } while (!isEmptyQueue);
-  // Note: at this stage, jobs might be still executing, as we did not wait for
-  // their completion.
-
-  // Graceful termination: await the completion of all currently executing jobs.
-  await sensorAggregationLimiter.waitForAllExecutingTasksToComplete();
-
-  // Post processing.
-  const errors = sensorAggregationLimiter.extractUncaughtErrors();
-  if (errors.length > 0) {
-    await updateFailedAggregationMetrics(errors);
-  }
-
-  // Summary.
-  const successfulTasksCount = processedMessagesCounter - errors.length;
-  logger.info(
-    `Successfully aggregated data from ${successfulTasksCount} IoT sensors, ` +
     `with failures in aggregating data from ${errors.length} IoT sensors`
   );
 }
